@@ -1,0 +1,14 @@
+---
+# ProviderConfig – on-premises Kubernetes provider using workload identity.
+# Replace with the appropriate provider for your target cloud (AWS, GCP, Azure).
+apiVersion: kubernetes.crossplane.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: gpu-platform-local
+  labels:
+    platform.gpu-platform.io/provider: kubernetes
+spec:
+  # InjectedIdentity uses the operator ServiceAccount token (compatible with
+  # IRSA on AWS EKS and Workload Identity on GCP GKE).
+  credentials:
+    source: InjectedIdentity

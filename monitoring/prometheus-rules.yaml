@@ -1,0 +1,132 @@
+---
+# Prometheus Alerting & Recording Rules – GPU Platform Operator
+# Loaded via the PrometheusRule CRD (kube-prometheus-stack compatible).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: gpu-platform-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+    app.kubernetes.io/component: gpu-platform
+spec:
+  groups:
+
+    # ── Operator / Control-Plane Health ────────────────────────────────────────
+    - name: gpu_platform.operator
+      interval: 30s
+      rules:
+        - alert: GPUPlatformOperatorDown
+          expr: |
+            absent(up{job="gpu-platform-operator"} == 1)
+          for: 2m
+          labels:
+            severity: critical
+            team: platform-engineering
+          annotations:
+            summary: "GPU Platform Operator is unreachable"
+            description: |
+              The GPU Platform Operator has been unavailable for >2 minutes.
+              Workload scheduling is suspended.
+            runbook_url: "https://github.com/8terbahn/distribute_gpu_scheduler/blob/main/docs/troubleshooting-runbook.md#1-operator-pod-is-down"
+
+        - alert: GPUPlatformHighReconcileLatency
+          expr: |
+            histogram_quantile(0.99,
+              rate(controller_runtime_reconcile_time_seconds_bucket{controller="gpuworkload"}[5m])
+            ) > 10
+          for: 5m
+          labels:
+            severity: warning
+            team: platform-engineering
+          annotations:
+            summary: "GPUWorkload reconcile P99 latency > 10s"
+            description: "99th percentile reconcile time is above 10 seconds. Check API server health and queue depth."
+
+        - alert: GPUPlatformReconcileErrors
+          expr: |
+            rate(controller_runtime_reconcile_errors_total{controller="gpuworkload"}[5m]) > 0.1
+          for: 3m
+          labels:
+            severity: warning
+            team: platform-engineering
+          annotations:
+            summary: "GPUWorkload reconcile error rate elevated (>0.1/s)"
+            description: "More than 0.1 reconcile errors/second over the last 5 minutes. Check operator logs."
+
+    # ── Worker Pool Health ─────────────────────────────────────────────────────
+    - name: gpu_platform.workers
+      interval: 30s
+      rules:
+        - alert: GPUPoolNoAvailableUnits
+          expr: gpu_platform_pool_available_units == 0
+          for: 10m
+          labels:
+            severity: warning
+            team: platform-engineering
+          annotations:
+            summary: "GPU Pool '{{ $labels.pool }}' fully saturated for >10m"
+            description: "Pool {{ $labels.pool }} ({{ $labels.gpu_type }}) has no free units. New workloads will queue."
+
+        - alert: GPUWorkerHeartbeatStale
+          expr: time() - gpu_platform_worker_last_heartbeat_timestamp > 30
+          for: 1m
+          labels:
+            severity: warning
+            team: platform-engineering
+          annotations:
+            summary: "Worker '{{ $labels.worker_id }}' heartbeat stale (>30s)"
+            description: "The scheduler will mark this worker unavailable. Check the worker pod."
+
+    # ── Business / Cost Controls ────────────────────────────────────────────────
+    - name: gpu_platform.business
+      interval: 60s
+      rules:
+        - alert: GPUWorkloadQueueDepthHigh
+          expr: gpu_platform_queue_depth > 50
+          for: 5m
+          labels:
+            severity: warning
+            team: platform-engineering
+          annotations:
+            summary: "GPU workload queue depth > 50 ({{ $value }} jobs)"
+            description: "Consider adding pool capacity or reviewing priority assignments."
+
+        - alert: GPUWorkloadFailureRateHigh
+          expr: |
+            rate(gpu_platform_workloads_total{status="failed"}[10m]) /
+            rate(gpu_platform_workloads_total[10m]) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+            team: platform-engineering
+          annotations:
+            summary: "GPU workload failure rate > 10%"
+            description: "More than 10% of GPU workloads are failing. Inspect worker logs."
+
+        - alert: GPUEnvironmentOverdue
+          expr: gpu_platform_environment_overdue_count > 0
+          for: 1m
+          labels:
+            severity: warning
+            team: platform-engineering
+          annotations:
+            summary: "{{ $value }} GPU environment(s) past auto-expiry deadline"
+            description: "Deprovisioning may have failed. Check GPUEnvironment status and workflow engine logs."
+
+    # ── Recording Rules (pre-computed for Grafana) ─────────────────────────────
+    - name: gpu_platform.recordings
+      interval: 60s
+      rules:
+        - record: gpu_platform:workload_completion_rate5m
+          expr: rate(gpu_platform_workloads_total{status="completed"}[5m])
+
+        - record: gpu_platform:pool_utilization_ratio
+          expr: 1 - (gpu_platform_pool_available_units / gpu_platform_pool_total_units)
+
+        - record: gpu_platform:avg_scheduling_latency_p50
+          expr: |
+            histogram_quantile(0.50,
+              rate(gpu_platform_scheduling_duration_seconds_bucket[5m])
+            )

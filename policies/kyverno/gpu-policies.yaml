@@ -1,0 +1,130 @@
+---
+# Kyverno ClusterPolicy – GPU Platform Governance
+#
+# These policies enforce platform compliance on all GPU-related Kubernetes resources.
+# Applied at admission time (before resources are written to etcd).
+#
+# Rules:
+#   1. require-cost-center-labels  – GPUWorkload/GPUPool must declare cost-center + owner.
+#   2. block-unapproved-gpu-type   – Only allow-listed GPU types accepted.
+#   3. max-units-per-environment   – GPUEnvironment claims capped at 16 units.
+#   4. deny-privileged-pods        – GPU worker Pods must not run privileged.
+#   5. require-resource-limits     – All Pods in gpu-* namespaces need CPU + memory limits.
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: gpu-platform-governance
+  annotations:
+    policies.kyverno.io/title: GPU Platform Governance
+    policies.kyverno.io/category: Platform Engineering
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: GPUWorkload, GPUPool, GPUEnvironment, Pod
+    policies.kyverno.io/description: |
+      Enforces platform compliance: required labels, GPU type allow-list,
+      unit limits, and Pod security constraints.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+
+    # ── Rule 1: Required labels on GPUWorkload ─────────────────────────────────
+    - name: require-gpuworkload-labels
+      match:
+        any:
+          - resources:
+              kinds: [GPUWorkload]
+              namespaces: ["gpu-*"]
+      validate:
+        message: |
+          GPUWorkload must have labels:
+            gpu-platform.io/cost-center (format: CC-NNNN)
+            gpu-platform.io/owner       (non-empty string)
+        pattern:
+          metadata:
+            labels:
+              "gpu-platform.io/cost-center": "CC-?*"
+              "gpu-platform.io/owner": "?*"
+
+    # ── Rule 2: Required labels on GPUPool ─────────────────────────────────────
+    - name: require-gpupool-labels
+      match:
+        any:
+          - resources:
+              kinds: [GPUPool]
+      validate:
+        message: |
+          GPUPool must have labels:
+            gpu-platform.io/cost-center
+            gpu-platform.io/owner
+        pattern:
+          metadata:
+            labels:
+              "gpu-platform.io/cost-center": "?*"
+              "gpu-platform.io/owner": "?*"
+
+    # ── Rule 3: GPU type allow-list ────────────────────────────────────────────
+    - name: block-unapproved-gpu-type
+      match:
+        any:
+          - resources:
+              kinds: [GPUWorkload]
+      validate:
+        message: >
+          spec.gpuRequirement must be one of: T4, V100, A100, H100.
+          Open a GitHub issue to request a new GPU type.
+        pattern:
+          spec:
+            gpuRequirement: "T4 | V100 | A100 | H100"
+
+    # ── Rule 4: Max GPU units per GPUEnvironment claim ─────────────────────────
+    - name: max-units-per-gpu-environment
+      match:
+        any:
+          - resources:
+              kinds: [GPUEnvironment]
+      validate:
+        message: |
+          GPUEnvironment claims are limited to 16 GPU units.
+          For larger allocations, open a GitHub issue or contact the platform team.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.units }}"
+                operator: GreaterThan
+                value: 16
+
+    # ── Rule 5: No privileged GPU worker Pods ──────────────────────────────────
+    - name: deny-privileged-gpu-pods
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: ["gpu-*"]
+      validate:
+        message: "GPU worker Pods must not run in privileged mode."
+        pattern:
+          spec:
+            =(initContainers):
+              - =(securityContext):
+                  =(privileged): "false"
+            containers:
+              - =(securityContext):
+                  =(privileged): "false"
+
+    # ── Rule 6: Require resource limits on GPU Pods ────────────────────────────
+    - name: require-resource-limits-gpu-pods
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: ["gpu-*"]
+      validate:
+        message: "All containers in gpu-* namespaces must declare CPU and memory limits."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  limits:
+                    memory: "?*"
+                    cpu: "?*"

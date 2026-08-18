@@ -1,0 +1,284 @@
+---
+# GitHub Actions CI/CD Pipeline – GPU Platform
+#
+# Stages:
+#   1. lint    – Go (golangci-lint) + JavaScript (ESLint)
+#   2. test    – Go unit + envtest integration tests + JS tests, coverage ≥ 70%
+#   3. build   – Docker multi-stage: operator, workflow engine, Crossplane function
+#   4. scan    – Trivy vulnerability scan (CRITICAL/HIGH blocks merge)
+#   5. chart   – Helm lint, template render, OCI push
+#   6. e2e     – Kind cluster: deploy, submit GPUWorkload, assert Assigned phase
+name: CI/CD
+
+on:
+  push:
+    branches: [main, "feature/**", "fix/**"]
+  pull_request:
+    branches: [main]
+
+env:
+  GO_VERSION:      "1.22"
+  NODE_VERSION:    "20"
+  REGISTRY:        ghcr.io
+  OPERATOR_IMAGE:  ghcr.io/${{ github.repository }}/operator
+  ENGINE_IMAGE:    ghcr.io/${{ github.repository }}/workflow-engine
+  FUNCTION_IMAGE:  ghcr.io/${{ github.repository }}/function-gpu-sizing
+
+jobs:
+  # ── 1. Lint ─────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: golangci-lint (operator)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.59
+          working-directory: operator
+          args: --timeout=5m
+
+      - name: golangci-lint (Crossplane function)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.59
+          working-directory: crossplane/functions/gpu-sizing
+          args: --timeout=5m
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: ESLint (workflow scripts)
+        working-directory: workflow/scripts
+        run: |
+          npm install --save-dev eslint
+          npx eslint "*.js" --max-warnings=0
+
+  # ── 2. Test ──────────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install setup-envtest
+        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+
+      - name: Set KUBEBUILDER_ASSETS
+        run: echo "KUBEBUILDER_ASSETS=$(setup-envtest use --print path 1.31.x)" >> $GITHUB_ENV
+
+      - name: Run operator tests
+        working-directory: operator
+        run: |
+          go test ./... -coverprofile=coverage.out -covermode=atomic -timeout=5m -v
+
+      - name: Enforce 70% coverage
+        working-directory: operator
+        run: |
+          COV=$(go tool cover -func=coverage.out | grep total | awk '{print substr($3,1,length($3)-1)}')
+          echo "Coverage: $COV%"
+          awk "BEGIN { if ($COV < 70) { print \"Coverage $COV% below 70%\"; exit 1 } }"
+
+      - uses: codecov/codecov-action@v4
+        with:
+          files: operator/coverage.out
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Run JS workflow tests
+        working-directory: workflow/scripts
+        run: |
+          npm install
+          npm test
+
+  # ── 3. Build ──────────────────────────────────────────────────────────────────
+  build:
+    name: Build Images
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push – operator
+        uses: docker/build-push-action@v6
+        with:
+          context: operator
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ env.OPERATOR_IMAGE }}:${{ github.sha }}
+            ${{ env.OPERATOR_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push – workflow engine
+        uses: docker/build-push-action@v6
+        with:
+          context: workflow/engine
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ env.ENGINE_IMAGE }}:${{ github.sha }}
+            ${{ env.ENGINE_IMAGE }}:latest
+
+      - name: Build & push – Crossplane function
+        uses: docker/build-push-action@v6
+        with:
+          context: crossplane/functions/gpu-sizing
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ env.FUNCTION_IMAGE }}:${{ github.sha }}
+            ${{ env.FUNCTION_IMAGE }}:latest
+
+  # ── 4. Security Scan ──────────────────────────────────────────────────────────
+  scan:
+    name: Security Scan (Trivy)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy – operator image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.OPERATOR_IMAGE }}:${{ github.sha }}
+          format: sarif
+          output: trivy.sarif
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
+        if: always()
+
+  # ── 5. Helm Chart ─────────────────────────────────────────────────────────────
+  helm:
+    name: Helm Chart
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.15.0
+
+      - name: Lint chart
+        run: helm lint charts/gpu-platform
+
+      - name: Template render test
+        run: |
+          helm template gpu-platform charts/gpu-platform \
+            --set operator.image.tag=${{ github.sha }} \
+            --set workflowEngine.image.tag=${{ github.sha }} \
+            > /dev/null
+
+      - name: Package + push (main only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          helm package charts/gpu-platform --destination ./dist
+          helm push dist/*.tgz oci://${{ env.REGISTRY }}/${{ github.repository }}/charts
+
+  # ── 6. E2E on Kind ────────────────────────────────────────────────────────────
+  e2e:
+    name: E2E (Kind)
+    runs-on: ubuntu-latest
+    needs: [build, helm]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: gpu-platform-e2e
+
+      - name: Install CRDs
+        run: kubectl apply -f config/crd/bases/
+
+      - name: Install Kyverno
+        run: |
+          helm repo add kyverno https://kyverno.github.io/kyverno/
+          helm install kyverno kyverno/kyverno -n kyverno --create-namespace --wait
+
+      - name: Deploy chart
+        run: |
+          helm install gpu-platform charts/gpu-platform \
+            --namespace gpu-platform --create-namespace \
+            --set operator.image.tag=${{ github.sha }} \
+            --set workflowEngine.image.tag=${{ github.sha }} \
+            --set redis.enabled=false \
+            --set postgres.enabled=false \
+            --wait --timeout=120s
+
+      - name: Create test GPUPool
+        run: |
+          kubectl apply -f - <<EOF
+          apiVersion: scheduling.gpu-platform.io/v1alpha1
+          kind: GPUPool
+          metadata:
+            name: a100-pool
+            namespace: gpu-platform
+            labels:
+              gpu-platform.io/cost-center: CC-0001
+              gpu-platform.io/owner: e2e-test
+          spec:
+            gpuType: A100
+            totalUnits: 4
+          EOF
+
+      - name: Submit test GPUWorkload
+        run: |
+          kubectl apply -f - <<EOF
+          apiVersion: scheduling.gpu-platform.io/v1alpha1
+          kind: GPUWorkload
+          metadata:
+            name: e2e-workload
+            namespace: gpu-platform
+            labels:
+              gpu-platform.io/cost-center: CC-0001
+              gpu-platform.io/owner: e2e-test
+          spec:
+            workload: llm_inference
+            gpuRequirement: A100
+            priority: 5
+          EOF
+
+      - name: Assert workload reaches Assigned phase
+        run: |
+          kubectl wait gpuworkload/e2e-workload \
+            --for=jsonpath='{.status.phase}'=Assigned \
+            --namespace gpu-platform \
+            --timeout=60s
+
+      - name: Assert pool capacity decremented
+        run: |
+          AVAILABLE=$(kubectl get gpupool a100-pool -n gpu-platform \
+            -o jsonpath='{.status.availableUnits}')
+          [ "$AVAILABLE" = "3" ] || (echo "Expected 3, got $AVAILABLE"; exit 1)

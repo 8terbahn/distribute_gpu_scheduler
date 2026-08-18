@@ -1,0 +1,23 @@
+apiVersion: v2
+name: gpu-platform
+description: |
+  GPU Platform Control Plane – Kubernetes Operator + Workflow Engine.
+  Deploys the GPU Platform Operator (CRDs, controllers, RBAC), Workflow Engine,
+  and optional monitoring components for the self-service GPU infrastructure platform.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - kubernetes
+  - operator
+  - gpu
+  - crossplane
+  - platform-engineering
+home: https://github.com/8terbahn/distribute_gpu_scheduler
+sources:
+  - https://github.com/8terbahn/distribute_gpu_scheduler
+maintainers:
+  - name: GPU Platform Team
+    url: https://github.com/8terbahn/distribute_gpu_scheduler/issues
+annotations:
+  category: Infrastructure

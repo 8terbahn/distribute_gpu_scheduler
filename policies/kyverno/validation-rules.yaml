@@ -1,0 +1,89 @@
+---
+# Kyverno ClusterPolicy – GPU Platform CEL Validation Rules
+#
+# Uses Common Expression Language (CEL) for fine-grained validation that
+# pattern-matching alone cannot express cleanly (regex, range checks, etc.).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: gpu-platform-cel-validation
+  annotations:
+    policies.kyverno.io/title: GPU Platform CEL Validation
+    policies.kyverno.io/category: Platform Engineering
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: |
+      CEL-based validation rules: cost-center regex, priority bounds,
+      expiry window limits, pool size, and namespace scoping.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+
+    # ── CEL 1: cost-center label format ────────────────────────────────────────
+    - name: validate-cost-center-format
+      match:
+        any:
+          - resources:
+              kinds: [GPUWorkload, GPUEnvironment]
+      validate:
+        cel:
+          expressions:
+            - expression: |
+                object.metadata.labels.exists(k, k == 'gpu-platform.io/cost-center') &&
+                object.metadata.labels['gpu-platform.io/cost-center'].matches('^CC-[0-9]{4}$')
+              message: "Label 'gpu-platform.io/cost-center' must match CC-NNNN (e.g. CC-4210)."
+
+    # ── CEL 2: workload priority in valid range ─────────────────────────────────
+    - name: validate-priority-bounds
+      match:
+        any:
+          - resources:
+              kinds: [GPUWorkload]
+      validate:
+        cel:
+          expressions:
+            - expression: |
+                object.spec.priority >= 1 && object.spec.priority <= 10
+              message: "spec.priority must be between 1 and 10 (inclusive)."
+
+    # ── CEL 3: auto-expiry window ≤ 168 h (7 days) ─────────────────────────────
+    - name: validate-auto-expire-hours
+      match:
+        any:
+          - resources:
+              kinds: [GPUEnvironment]
+      validate:
+        cel:
+          expressions:
+            - expression: |
+                !has(object.spec.autoExpireHours) || object.spec.autoExpireHours <= 168
+              message: "spec.autoExpireHours must not exceed 168 (7 days)."
+
+    # ── CEL 4: GPUPool totalUnits must be positive ─────────────────────────────
+    - name: validate-pool-total-units
+      match:
+        any:
+          - resources:
+              kinds: [GPUPool]
+      validate:
+        cel:
+          expressions:
+            - expression: |
+                object.spec.totalUnits > 0
+              message: "spec.totalUnits must be a positive integer."
+
+    # ── CEL 5: GPUEnvironment claims must be in gpu-* namespace ───────────────
+    - name: validate-gpu-environment-namespace
+      match:
+        any:
+          - resources:
+              kinds: [GPUEnvironment]
+      validate:
+        cel:
+          expressions:
+            - expression: |
+                object.metadata.namespace.startsWith('gpu-') ||
+                object.metadata.namespace == 'gpu-self-service'
+              message: |
+                GPUEnvironment claims must be in a 'gpu-*' namespace or 'gpu-self-service'.
+                See docs/developer-guide.md for details.

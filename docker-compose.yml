@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: scheduler
+      POSTGRES_USER: scheduler
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+
+  scheduler:
+    build:
+      context: ./scheduler-go
+    environment:
+      HTTP_PORT: "8080"
+      REDIS_ADDR: redis:6379
+      REDIS_DB: "0"
+      POSTGRES_DSN: ${POSTGRES_DSN}
+      WORKER_TIMEOUT_SECONDS: "20"
+      DISPATCH_INTERVAL_MS: "500"
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+      - postgres

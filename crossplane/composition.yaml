@@ -1,0 +1,139 @@
+---
+# Crossplane Composition – maps an XGPUEnvironment claim to concrete Kubernetes resources.
+#
+# Resources provisioned per GPUEnvironment claim:
+#   1. Namespace         – team-scoped, labelled for cost attribution.
+#   2. ResourceQuota     – limits GPU units and Pod count.
+#   3. NetworkPolicy     – deny external ingress; allow intra-namespace traffic.
+#   4. GPUPool CR        – managed by the GPU Platform Operator.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xgpuenvironment-composition
+  labels:
+    crossplane.io/xrd: xgpuenvironments.platform.gpu-platform.io
+  annotations:
+    platform.gpu-platform.io/version: "v1alpha1"
+spec:
+  compositeTypeRef:
+    apiVersion: platform.gpu-platform.io/v1alpha1
+    kind: XGPUEnvironment
+
+  # Pipeline mode enables chaining Crossplane Functions for complex logic.
+  mode: Pipeline
+  pipeline:
+    # Step 1: Custom Go Function validates sizing and injects cost/expiry annotations.
+    - step: gpu-sizing
+      functionRef:
+        name: function-gpu-sizing
+      input:
+        apiVersion: gpu-sizing.fn.gpu-platform.io/v1alpha1
+        kind: SizingInput
+        metadata:
+          name: gpu-sizing-input
+
+    # Step 2: Patch-and-Transform applies the composed resources.
+    - step: apply-resources
+      functionRef:
+        name: function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+
+          # ── Namespace ──────────────────────────────────────────────────────
+          - name: gpu-namespace
+            base:
+              apiVersion: v1
+              kind: Namespace
+              spec: {}
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.owner
+                toFieldPath: metadata.name
+                transforms:
+                  - type: string
+                    string:
+                      fmt: "gpu-%s"
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.costCenter
+                toFieldPath: metadata.labels["gpu-platform.io/cost-center"]
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.owner
+                toFieldPath: metadata.labels["gpu-platform.io/owner"]
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.gpuType
+                toFieldPath: metadata.labels["gpu-platform.io/gpu-type"]
+
+          # ── ResourceQuota ──────────────────────────────────────────────────
+          - name: gpu-resource-quota
+            base:
+              apiVersion: v1
+              kind: ResourceQuota
+              metadata:
+                name: gpu-quota
+              spec:
+                hard:
+                  pods: "50"
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.owner
+                toFieldPath: metadata.namespace
+                transforms:
+                  - type: string
+                    string:
+                      fmt: "gpu-%s"
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.units
+                toFieldPath: spec.hard["requests.nvidia.com/gpu"]
+                transforms:
+                  - type: convert
+                    convert:
+                      toType: string
+
+          # ── NetworkPolicy: deny all external ingress ───────────────────────
+          - name: gpu-network-policy
+            base:
+              apiVersion: networking.k8s.io/v1
+              kind: NetworkPolicy
+              metadata:
+                name: deny-external-ingress
+              spec:
+                podSelector: {}
+                policyTypes: [Ingress]
+                ingress:
+                  - from:
+                      - podSelector: {}
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.owner
+                toFieldPath: metadata.namespace
+                transforms:
+                  - type: string
+                    string:
+                      fmt: "gpu-%s"
+
+          # ── GPUPool CR (managed by the GPU Platform Operator) ──────────────
+          - name: gpu-pool
+            base:
+              apiVersion: scheduling.gpu-platform.io/v1alpha1
+              kind: GPUPool
+              spec:
+                totalUnits: 0
+            patches:
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.gpuType
+                toFieldPath: spec.gpuType
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.units
+                toFieldPath: spec.totalUnits
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.owner
+                toFieldPath: metadata.namespace
+                transforms:
+                  - type: string
+                    string:
+                      fmt: "gpu-%s"
+              - type: FromCompositeFieldPath
+                fromFieldPath: spec.costCenter
+                toFieldPath: metadata.labels["gpu-platform.io/cost-center"]

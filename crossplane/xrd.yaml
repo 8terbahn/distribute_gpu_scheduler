@@ -1,0 +1,72 @@
+---
+# CompositeResourceDefinition (XRD) – defines the self-service API exposed to platform users.
+#
+# Teams use the `GPUEnvironment` Claim (the shorter namespaced form) to request a
+# complete GPU compute environment. The platform provisions all underlying resources
+# transparently via the Composition defined in composition.yaml.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xgpuenvironments.platform.gpu-platform.io
+  annotations:
+    platform.gpu-platform.io/description: |
+      Self-service GPU environment for product teams.
+      Provisions a dedicated Namespace, ResourceQuota, NetworkPolicy, and GPUPool
+      from a single declarative Claim.
+spec:
+  group: platform.gpu-platform.io
+  names:
+    kind: XGPUEnvironment
+    plural: xgpuenvironments
+  claimNames:
+    kind: GPUEnvironment
+    plural: gpuenvironments
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [gpuType, units, costCenter, owner]
+              properties:
+                gpuType:
+                  type: string
+                  enum: [T4, V100, A100, H100]
+                  description: GPU model type to provision.
+                units:
+                  type: integer
+                  minimum: 1
+                  maximum: 32
+                  description: Number of GPU units to allocate.
+                costCenter:
+                  type: string
+                  pattern: '^CC-[0-9]{4}$'
+                  description: Cost-center code for chargeback (format CC-NNNN).
+                owner:
+                  type: string
+                  description: Team or individual responsible for this environment.
+                priority:
+                  type: integer
+                  minimum: 1
+                  maximum: 10
+                  default: 5
+                  description: Scheduling priority (higher = scheduled first).
+                autoExpireHours:
+                  type: integer
+                  minimum: 1
+                  maximum: 168
+                  default: 24
+                  description: Hours until the environment is automatically deprovisioned.
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                poolName:
+                  type: string
+                expiresAt:
+                  type: string

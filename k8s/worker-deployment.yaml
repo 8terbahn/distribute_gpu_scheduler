@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-workers
+  namespace: gpu-scheduler
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: gpu-worker
+  template:
+    metadata:
+      labels:
+        app: gpu-worker
+    spec:
+      containers:
+        - name: worker
+          image: distributed-gpu-scheduler/worker:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: distributed-gpu-scheduler-config
+          env:
+            - name: REDIS_ADDR
+              value: redis
+            - name: WORKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GPU_TYPE
+              value: "A100"
+            - name: GPU_MEMORY
+              value: "80GB"

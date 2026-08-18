@@ -1,0 +1,65 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: gpupools.scheduling.gpu-platform.io
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.0
+spec:
+  group: scheduling.gpu-platform.io
+  names:
+    kind: GPUPool
+    listKind: GPUPoolList
+    plural: gpupools
+    singular: gpupool
+    shortNames: [gpup]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: GPU Type
+          type: string
+          jsonPath: .spec.gpuType
+        - name: Total
+          type: integer
+          jsonPath: .spec.totalUnits
+        - name: Available
+          type: integer
+          jsonPath: .status.availableUnits
+        - name: Allocated
+          type: integer
+          jsonPath: .status.allocatedUnits
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [gpuType, totalUnits]
+              properties:
+                gpuType:
+                  type: string
+                  enum: [T4, V100, A100, H100]
+                totalUnits:
+                  type: integer
+                  minimum: 1
+                labels:
+                  type: object
+                  additionalProperties:
+                    type: string
+            status:
+              type: object
+              properties:
+                availableUnits:
+                  type: integer
+                allocatedUnits:
+                  type: integer
+                message:
+                  type: string
