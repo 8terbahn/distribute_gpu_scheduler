@@ -1,19 +1,14 @@
 # GPU Platform – Infrastructure Control Plane & Workflow Automation
 
-> A production-grade, Kubernetes-native GPU compute platform built with Go, Crossplane,
-> and the Operator pattern. Enables product teams to self-serve GPU compute environments
-> through a single declarative YAML, with enterprise-grade compliance, cost attribution,
-> and automated approval workflows built in.
+> A cost-aware, Kubernetes-native workload orchestration engine. Built with Go and the Operator pattern, it enables product teams to self-serve GPU compute environments while automatically enforcing budget constraints, cost attribution, and compliance workflows.
 
-Originally a lightweight priority-based GPU task scheduler; evolved into a full
-**Platform Engineering reference implementation** demonstrating:
+**Part of the [GPU Compute Economics Platform](#related-projects)** — this is the decision layer. It consumes pricing data from [gpu_price_intelligence](https://github.com/8terbahn/gpu_price_intelligence) and performance baselines from [gpu_benchmark_platform](https://github.com/8terbahn/gpu_benchmark_platform) to optimally schedule workloads.
 
-- Kubernetes Operator (Kubebuilder / controller-runtime)
-- Crossplane self-service control plane (XRD → Composition → Go Function)
-- JavaScript workflow automation embedded in Go (goja)
-- Policy-as-Code (Kyverno + CEL)
-- Helm packaging + GitOps CI/CD (GitHub Actions → ArgoCD)
-- SRE-grade observability (Prometheus rules + Grafana dashboard)
+### Financial Compliance & Automation
+This project demonstrates patterns commonly found in heavily regulated environments (like FinTech):
+- **Approval Workflows:** Embedded JavaScript automation (via goja) enforces budget checks and management escalations before resource allocation, mirroring trade limit approvals.
+- **Policy-as-Code:** Kyverno + CEL enforces strict cost-center tagging and hardware allow-lists at admission time.
+- **Declarative Control Plane:** Crossplane abstracts underlying infrastructure into a unified self-service API.
 
 ---
 
@@ -309,3 +304,28 @@ Key metrics:
   deployments.
 - **SRE-grade observability**: `PrometheusRule` CRD alerts + pre-built Grafana dashboard
   + 9-scenario troubleshooting runbook.
+
+
+---
+
+## Related Projects
+
+This project is part of a three-tier platform for GPU compute economics:
+
+| Layer | Project | Role |
+|---|---|---|
+| **Data Ingestion** | [gpu_price_intelligence](https://github.com/8terbahn/gpu_price_intelligence) | Collects and serves GPU pricing data |
+| **Performance Evaluation** | [gpu_benchmark_platform](https://github.com/8terbahn/gpu_benchmark_platform) | Benchmarks GPU performance via K8s Operator |
+| **Smart Scheduling** | **distribute_gpu_scheduler** (this repo) | Cost-optimized workload orchestration |
+
+### Financial Domain Parallels
+
+The architecture of this scheduling system mirrors patterns found in financial trading platforms:
+
+| This Platform | Financial Equivalent |
+|---|---|
+| Budget limit validation before GPU scheduling | Pre-trade risk limit checks |
+| Cost-optimized workload placement | Best execution / smart order routing |
+| Kyverno admission policies | Regulatory rule engines (FINMA, MiFID II) |
+| Multi-stage JS approval workflows | Multi-tier trade or loan approval systems |
+| Prometheus SLO monitoring | Market connectivity monitoring |
